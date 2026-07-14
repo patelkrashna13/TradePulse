@@ -20,24 +20,97 @@ ALPHA_VANTAGE_URL = "https://www.alphavantage.co/query?function=ALL_COMMODITIES&
 def health() -> dict[str, str]:
     return {"status": "ok"}
 
-
 @app.get("/api/commodities")
 async def get_commodities() -> dict[str, Any]:
-    params = {
-        "function": "ALL_COMMODITIES",
-        "interval": "monthly",
-        "apikey": "demo",
-    }
-
     async with httpx.AsyncClient(timeout=20.0) as client:
-        response = await client.get(ALPHA_VANTAGE_URL, params=params)
+        response = await client.get(ALPHA_VANTAGE_URL)
         response.raise_for_status()
         payload = response.json()
 
+    # Transform Alpha Vantage data into chart format (labels and values)
+    chart_data = {"label": "Monthly", "labels": [], "values": []}
+    
     if "data" in payload:
-        return {"data": payload["data"]}
+        commodities = payload["data"]
+        if isinstance(commodities, dict):
+            # Extract labels and values from the commodity data
+            labels = []
+            values = []
+            for key, value in commodities.items():
+                labels.append(key)
+                if isinstance(value, dict) and "value" in value:
+                    try:
+                        values.append(float(value["value"]))
+                    except:
+                        values.append(0)
+                elif isinstance(value, (int, float)):
+                    values.append(float(value))
+                else:
+                    values.append(0)
+            chart_data["labels"] = labels[:12]  # Limit to 12 months
+            chart_data["values"] = values[:12]
+        elif isinstance(commodities, list):
+            # Handle list format
+            labels = []
+            values = []
+            for item in commodities[:12]:
+                if isinstance(item, dict):
+                    if "date" in item:
+                        labels.append(item["date"])
+                    elif "label" in item:
+                        labels.append(item["label"])
+                    else:
+                        labels.append(str(len(labels) + 1))
+                    
+                    if "value" in item:
+                        try:
+                            values.append(float(item["value"]))
+                        except:
+                            values.append(0)
+                    else:
+                        values.append(0)
+            chart_data["labels"] = labels
+            chart_data["values"] = values
 
-    if "error" in payload:
-        raise HTTPException(status_code=502, detail=payload["error"])
+    # Create user/broker entries
+    users_data = []
+    brokers = [
+        {"name": "Zerodha (DU000004)", "positions": "1", "available": "₹ 1.54 Cr", "deployed": "3", "active": "1", "status": "Active"},
+        {"name": "Angel One (MNBN1026)", "positions": "2", "available": "₹ 2.50 K", "deployed": "2", "active": "2", "status": "Active"},
+        {"name": "Finvasia (FA189009)", "positions": "0", "available": "₹ 50.02 K", "deployed": "0", "active": "0", "status": "Pending"},
+    ]
+    
+    # Use chart values for broker PnL
+    for idx, broker in enumerate(brokers):
+        value = "₹ 0.00"
+        if len(chart_data["values"]) > idx:
+            num_value = chart_data["values"][idx]
+            value = f"₹ {num_value:.2f} K"
+        
+        users_data.append({
+            "broker": broker["name"],
+            "positions": broker["positions"],
+            "available": broker["available"],
+            "deployed": broker["deployed"],
+            "active": broker["active"],
+            "status": broker["status"],
+            "pnl": value
+        })
+    
+    # Calculate analytics from the chart data
+    analytics = None
+    if chart_data["values"]:
+        values = chart_data["values"]
+        last_value = values[-1] if values else 0
+        prev_value = values[-2] if len(values) > 1 else last_value
+        pct_change = ((last_value - prev_value) / prev_value) if prev_value != 0 else 0
+        analytics = {
+            "last": f"₹ {last_value:.2f} K",
+            "pct_change": pct_change
+        }
 
-    return {"data": payload}
+    return {
+        "data": chart_data,
+        "users": users_data,
+        "analytics": analytics
+    }
