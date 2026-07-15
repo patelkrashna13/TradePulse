@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import httpx
 from typing import Any
@@ -15,7 +15,6 @@ app.add_middleware(
 
 ALPHA_VANTAGE_URL = "https://www.alphavantage.co/query?function=ALL_COMMODITIES&interval=monthly&apikey=demo"
 
-
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
@@ -27,13 +26,11 @@ async def get_commodities() -> dict[str, Any]:
         response.raise_for_status()
         payload = response.json()
 
-    # Transform Alpha Vantage data into chart format (labels and values)
     chart_data = {"label": "Monthly", "labels": [], "values": []}
     
     if "data" in payload:
         commodities = payload["data"]
         if isinstance(commodities, dict):
-            # Extract labels and values from the commodity data
             labels = []
             values = []
             for key, value in commodities.items():
@@ -47,10 +44,9 @@ async def get_commodities() -> dict[str, Any]:
                     values.append(float(value))
                 else:
                     values.append(0)
-            chart_data["labels"] = labels[:12]  # Limit to 12 months
+            chart_data["labels"] = labels[:12]
             chart_data["values"] = values[:12]
         elif isinstance(commodities, list):
-            # Handle list format
             labels = []
             values = []
             for item in commodities[:12]:
@@ -72,7 +68,6 @@ async def get_commodities() -> dict[str, Any]:
             chart_data["labels"] = labels
             chart_data["values"] = values
 
-    # Create user/broker entries
     users_data = []
     brokers = [
         {"name": "Zerodha (DU000004)", "positions": "1", "available": "₹ 1.54 Cr", "deployed": "3", "active": "1", "status": "Active"},
@@ -80,7 +75,6 @@ async def get_commodities() -> dict[str, Any]:
         {"name": "Finvasia (FA189009)", "positions": "0", "available": "₹ 50.02 K", "deployed": "0", "active": "0", "status": "Pending"},
     ]
     
-    # Use chart values for broker PnL
     for idx, broker in enumerate(brokers):
         value = "₹ 0.00"
         if len(chart_data["values"]) > idx:
@@ -97,7 +91,6 @@ async def get_commodities() -> dict[str, Any]:
             "pnl": value
         })
     
-    # Calculate analytics from the chart data
     analytics = None
     if chart_data["values"]:
         values = chart_data["values"]
