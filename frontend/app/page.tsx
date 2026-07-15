@@ -1,13 +1,8 @@
 "use client";
 
 import { useMemo, useState, useEffect } from "react";
-
-const CHART_CONFIG = {
-  yLabels: ["40 k", "30 k", "20 k", "10 k", "0 k", "-10 k", "-20 k", "-30 k", "-40 k"],
-};
-
-const CHART_WIDTH = 1120;
-const CHART_HEIGHT = 236;
+import { useQuery } from "@tanstack/react-query";
+import ReactApexChart from "react-apexcharts";
 
 const DATA_FALLBACK = {
   daily: {
@@ -103,88 +98,175 @@ const TABLE_DATA = [
   },
 ];
 
-function buildPath(values: number[], width: number, height: number) {
-  if (!values || values.length === 0) {
-    return "";
-  }
-  const max = Math.max(...values, 40);
-  const min = Math.min(...values, -40);
-  const range = max - min || 1;
-  const step = width / (values.length - 1);
-
-  const points = values.map((value, index) => {
-    const x = index * step;
-    const normalized = (value - min) / range;
-    const y = height - normalized * height;
-    return [x, y];
-  });
-
-  const path = points
-    .map(([x, y], index) => `${index === 0 ? "M" : "L"} ${x.toFixed(2)} ${y.toFixed(2)}`)
-    .join(" ");
-
-  const lastPoint = points[points.length - 1];
-  return `${path} L ${lastPoint[0].toFixed(2)} ${height.toFixed(2)} L 0 ${height.toFixed(2)} Z`;
-}
-
 export default function Home() {
   const [activeRange, setActiveRange] = useState<keyof typeof DATA_FALLBACK>("daily");
-  const [activeData, setActiveData] = useState(DATA_FALLBACK.daily);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [users, setUsers] = useState(TABLE_DATA);
-  const [analytics, setAnalytics] = useState<any>(null);
   const [showToast, setShowToast] = useState(false);
-
+  const [minLoading, setMinLoading] = useState(false);
   const backendUrl = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
 
-  useEffect(() => {
-    let mounted = true;
-    const load = async () => {
-      if (activeRange === "monthly") {
-        setShowToast(true);
-        setTimeout(() => setShowToast(false), 3000);
-        setLoading(true);
-        setError(null);
-        try {
-          const resp = await fetch(`${backendUrl}/api/commodities?interval=monthly`);
-          if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-          const payload = await resp.json();
-          const data = payload?.data ?? DATA_FALLBACK[activeRange];
-          const usersFromApi = payload?.users ?? TABLE_DATA;
-          const analyticsFromApi = payload?.analytics ?? data?.analytics ?? null;
-          if (mounted) {
-            setActiveData(data);
-            setUsers(usersFromApi as any);
-            setAnalytics(analyticsFromApi);
-          }
-        } catch (err) {
-          if (mounted) {
-            setError(err instanceof Error ? err.message : String(err));
-            setActiveData(DATA_FALLBACK[activeRange]);
-          }
-        } finally {
-          if (mounted) setLoading(false);
-        }
-      } else {
-        // Show toast for daily and yearly
-        setShowToast(true);
-        setTimeout(() => setShowToast(false), 3000);
-        // Reset to static data for daily and yearly
-        if (mounted) {
-          setActiveData(DATA_FALLBACK[activeRange]);
-          setUsers(TABLE_DATA);
-          setAnalytics(null);
-        }
+  // React Query for fetching API data
+  const { data: apiData, isLoading, error } = useQuery({
+    queryKey: ["commodities", activeRange],
+    queryFn: async () => {
+      if (activeRange !== "monthly" && activeRange !== "yearly") {
+        return null;
       }
-    };
-    load();
-    return () => {
-      mounted = false;
-    };
+      const resp = await fetch(`${backendUrl}/api/commodities?interval=monthly`);
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      return resp.json();
+    },
+    enabled: activeRange === "monthly" || activeRange === "yearly",
+  });
+
+  // Determine active data based on filter
+  const activeData = useMemo(() => {
+    if (activeRange === "daily") {
+      return DATA_FALLBACK[activeRange];
+    }
+    
+    if (activeRange === "monthly" && apiData?.data) {
+      return apiData.data;
+    }
+    
+    if (activeRange === "yearly" && apiData?.data) {
+      // Calculate yearly average from monthly data
+      const monthlyData = apiData.data;
+      if (monthlyData && monthlyData.values && monthlyData.values.length > 0) {
+        // Group by year and calculate averages
+        const yearlyGroups: { [key: string]: number[] } = {};
+        const labels = monthlyData.labels || [];
+        const values = monthlyData.values || [];
+        
+        labels.forEach((label: string, index: number) => {
+          const year = label.substring(0, 4); // Extract year from label
+          if (!yearlyGroups[year]) {
+            yearlyGroups[year] = [];
+          }
+          yearlyGroups[year].push(values[index]);
+        });
+        
+        // Calculate averages for each year
+        const yearlyLabels = Object.keys(yearlyGroups).sort();
+        const yearlyValues = yearlyLabels.map(year => {
+          const yearValues = yearlyGroups[year];
+          const avg = yearValues.reduce((sum, val) => sum + val, 0) / yearValues.length;
+          return avg;
+        });
+        
+        return {
+          label: "Yearly",
+          labels: yearlyLabels,
+          values: yearlyValues,
+        };
+      }
+    }
+    
+    // Return empty data while loading for monthly/yearly
+    if (activeRange === "monthly" || activeRange === "yearly") {
+      return { label: activeRange === "monthly" ? "Monthly" : "Yearly", labels: [], values: [] };
+    }
+    
+    return DATA_FALLBACK[activeRange];
+  }, [activeRange, apiData]);
+
+  const users = useMemo(() => {
+    if ((activeRange === "monthly" || activeRange === "yearly") && apiData?.users) {
+      return apiData.users;
+    }
+    return TABLE_DATA;
+  }, [activeRange, apiData]);
+
+  const analytics = useMemo(() => {
+    if ((activeRange === "monthly" || activeRange === "yearly") && apiData?.analytics) {
+      return apiData.analytics;
+    }
+    return null;
+  }, [activeRange, apiData]);
+
+  // Show toast when filter changes
+  useEffect(() => {
+    setShowToast(true);
+    setTimeout(() => setShowToast(false), 2000);
+    
+    // Set minimum loading time for monthly/yearly
+    if (activeRange === "monthly" || activeRange === "yearly") {
+      setMinLoading(true);
+      const timer = setTimeout(() => {
+        setMinLoading(false);
+      }, 1000);
+      return () => clearTimeout(timer);
+    }
   }, [activeRange]);
 
-  const svgPath = useMemo(() => buildPath(activeData.values, CHART_WIDTH, CHART_HEIGHT), [activeData]);
+  // ApexCharts configuration
+  const chartOptions: any = useMemo(() => ({
+    chart: {
+      type: "area" as const,
+      height: 260,
+      toolbar: { show: false },
+      animations: {
+        enabled: true,
+        easing: "easeinout" as const,
+        speed: 800,
+      },
+    },
+    series: [{
+      name: "Value",
+      data: activeData.values || [],
+    }],
+    xaxis: {
+      categories: activeData.labels || [],
+      labels: {
+        style: {
+          fontSize: "10px",
+          fontWeight: 600,
+          colors: "#5c759c",
+        },
+      },
+      axisBorder: { show: false },
+      axisTicks: { show: false },
+    },
+    yaxis: {
+      labels: {
+        style: {
+          fontSize: "11px",
+          fontWeight: 500,
+          colors: "#5c759c",
+        },
+      },
+    },
+    colors: ["#00abc2"],
+    fill: {
+      type: "gradient" as const,
+      gradient: {
+        shadeIntensity: 1,
+        opacityFrom: 0.3,
+        opacityTo: 0.05,
+        stops: [0, 90, 100],
+      },
+    },
+    stroke: {
+      curve: "straight",
+      width: 3,
+    },
+    grid: {
+      row: {
+        colors: ["transparent"],
+        opacity: 0.5,
+      },
+      column: {
+        colors: ["transparent"],
+        opacity: 0.5,
+      },
+    },
+    dataLabels: { enabled: false },
+    tooltip: {
+      theme: "light" as const,
+      style: {
+        fontSize: "12px",
+      },
+    },
+  }), [activeData]);
 
   return (
     <div className="min-h-screen bg-[#f4f8ff] text-[#08131e]">
@@ -219,9 +301,11 @@ export default function Home() {
           </div>
         </header>
 
-        {/* Contact Us button centered directly below navbar */}
-        <div className="mt-4 flex justify-end">
-          <button className="rounded-2xl bg-[#0075ff] px-8 py-2 text-lg font-bold text-white shadow-[0_10px_20px_rgba(0,117,255,0.18)]">
+        <div className="mt-4 flex items-center justify-between">
+          <div className="text-black ml-[1rem] font-bold text-1xl">
+            Dashboard
+          </div>
+          <button className="rounded-2xl bg-[#0075ff] px-6 py-2 text-lg font-bold text-white shadow-[0_10px_20px_rgba(0,117,255,0.18)]">
             Contact Us
           </button>
         </div>
@@ -229,7 +313,7 @@ export default function Home() {
         <section className="mt-6">
           <div className="flex flex-col gap-6 sm:flex-row sm:items-center sm:justify-between">
             <div>
-              <h1 className="text-2xl font-semibold text-[#08131e]">Dashboard</h1>
+              <h1 className="text-2xl font-semibold text-[#08131e]"></h1>
             </div>
             <div className="flex flex-wrap gap-3">
               {(Object.keys(DATA_FALLBACK) as Array<keyof typeof DATA_FALLBACK>).map((rangeKey) => {
@@ -252,52 +336,25 @@ export default function Home() {
             </div>
           </div>
 
-          <div className="mt-8 overflow-hidden rounded-3xl border border-[#0075ff] bg-white px-6 py-6">
-            <div className="flex items-center justify-between pb-4">
-              <div className="text-sm font-semibold uppercase tracking-[0.18em] text-[#5c759c]">{activeData.label} view</div>
-              <div className="text-sm text-right">
-                <div className="text-sm text-[#5c759c]">Last value</div>
-                <div className="text-lg font-bold text-[#08131e]">{analytics ? String(analytics.last) : "—"}</div>
-                <div className={`text-sm font-semibold ${analytics && analytics.pct_change >= 0 ? "text-[#027a48]" : "text-[#b47f0e]"}`}>
-                  {analytics ? `${(analytics.pct_change * 100).toFixed(2)}%` : ""}
-                </div>
-              </div>
-            </div>
-            <div className="relative overflow-hidden rounded-[20px] border border-[#dbeafe] bg-[#f8fbff] px-6 py-8">
+          <div className="mt-8 px-6 py-6">
+            <div className="relative overflow-hidden rounded-[20px] border border-[#dbeafe] bg-white px-6 py-8">
               <div className="absolute inset-y-0 left-0 w-full bg-[linear-gradient(180deg,rgba(2,214,255,0.1),transparent)]" />
               <div className="relative">
-                <div className="grid h-60 grid-cols-[max-content_1fr] gap-x-4">
-                  <div className="flex flex-col justify-between pr-4 text-xs font-medium text-[#5c759c]">
-                    {CHART_CONFIG.yLabels.map((label) => (
-                      <span key={label}>{label}</span>
-                    ))}
-                  </div>
-                  <div className="relative h-60 overflow-hidden rounded-[18px] bg-white/80">
-                    <div className="absolute inset-0 bg-[linear-gradient(0deg,rgba(7,117,255,0.06)_1px,transparent_1px)] bg-size-[100%_40px]" />
-                    <div className="absolute inset-0 bg-[linear-gradient(90deg,rgba(7,117,255,0.08)_1px,transparent_1px)] bg-size-[80px_100%]" />
-                    <svg viewBox="0 0 1120 236" className="relative h-full w-full">
-                      <defs>
-                        <linearGradient id="areaGradient" x1="0" y1="0" x2="0" y2="1">
-                          <stop offset="0%" stopColor="#00abc2" stopOpacity="0.3" />
-                          <stop offset="100%" stopColor="#00abc2" stopOpacity="0" />
-                        </linearGradient>
-                      </defs>
-                      <path d={svgPath} fill="url(#areaGradient)" stroke="#00abc2" strokeWidth="3" />
-                    </svg>
-                    <div className="pointer-events-none absolute inset-x-0 bottom-0 flex justify-between px-3 text-[11px] font-semibold uppercase tracking-[0.22em] text-[#5c759c]">
-                      {activeData.labels?.map((label) => (
-                        <span key={label} className="whitespace-nowrap">
-                          {label}
-                        </span>
-                      ))}
-                    </div>
-                    <div className="pointer-events-none absolute inset-0">
-                      <div className="absolute left-[92%] top-[44%]">
-                        <div className="h-4 w-4 rounded-full bg-[#00abc2] shadow-[0_0_0_8px_rgba(0,171,194,0.12)]" />
-                      </div>
+                {(isLoading || minLoading) && (activeRange === "monthly" || activeRange === "yearly") ? (
+                  <div className="flex h-60 items-center justify-center">
+                    <div className="flex flex-col items-center gap-3">
+                      <div className="h-8 w-8 animate-spin rounded-full border-4 border-[#0075ff] border-t-transparent"></div>
+                      <span className="text-sm font-medium text-[#5c759c]">Loading data...</span>
                     </div>
                   </div>
-                </div>
+                ) : (
+                  <ReactApexChart
+                    options={chartOptions}
+                    series={chartOptions.series}
+                    type="area"
+                    height={260}
+                  />
+                )}
               </div>
             </div>
           </div>
@@ -343,9 +400,9 @@ export default function Home() {
       </div>
 
       {showToast && (
-        <div className={`fixed top-4 right-4 z-50 rounded-lg px-6 py-4 text-white shadow-lg ${activeRange === "monthly" ? "bg-[#027a48]" : "bg-[#0075ff]"}`}>
+        <div className={`fixed top-4 right-4 z-50 rounded-lg px-6 py-4 text-white shadow-lg ${activeRange === "monthly" || activeRange === "yearly" ? "bg-[#027a48]" : "bg-[#0075ff]"}`}>
           <div className="flex items-center gap-3">
-            {activeRange === "monthly" ? (
+            {activeRange === "monthly" || activeRange === "yearly" ? (
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
                 <path d="M12 2C6.48 2 2 6.48 2 12C2 17.52 6.48 22 12 22C17.52 22 22 17.52 22 12C22 6.48 17.52 2 12 2ZM10 17L5 12L6.41 10.59L10 14.17L17.59 6.58L19 8L10 17Z" fill="white"/>
               </svg>
@@ -357,6 +414,8 @@ export default function Home() {
             <span className="font-semibold">
               {activeRange === "monthly" 
                 ? "Alpha Vantage API data is shown on the dashboard value" 
+                : activeRange === "yearly"
+                ? "Yearly average from Alpha Vantage API data"
                 : `Static data for ${activeRange} filter`}
             </span>
           </div>
