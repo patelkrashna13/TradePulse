@@ -46,27 +46,6 @@ async def get_commodities() -> dict[str, Any]:
                     values.append(0)
             chart_data["labels"] = labels[:12]
             chart_data["values"] = values[:12]
-        elif isinstance(commodities, list):
-            labels = []
-            values = []
-            for item in commodities[:12]:
-                if isinstance(item, dict):
-                    if "date" in item:
-                        labels.append(item["date"])
-                    elif "label" in item:
-                        labels.append(item["label"])
-                    else:
-                        labels.append(str(len(labels) + 1))
-                    
-                    if "value" in item:
-                        try:
-                            values.append(float(item["value"]))
-                        except:
-                            values.append(0)
-                    else:
-                        values.append(0)
-            chart_data["labels"] = labels
-            chart_data["values"] = values
 
     users_data = []
     brokers = [
